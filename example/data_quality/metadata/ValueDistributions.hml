@@ -121,14 +121,20 @@ definition:
   graphql:
     selectMany:
       queryRootField: valueDistributions
+      subscription:
+        rootField: valueDistributions
     selectUniques:
       - queryRootField: valueDistributionsById
         uniqueIdentifier:
           - id
+        subscription:
+          rootField: valueDistributionsById
     orderByExpressionType: ValueDistributionsOrderBy
     filterInputTypeName: ValueDistributionsFilterInput
     aggregate:
       queryRootField: valueDistributionsAggregate
+      subscription:
+        rootField: valueDistributionsAggregate
 
 ---
 kind: ModelPermissions
@@ -139,6 +145,7 @@ definition:
     - role: admin
       select:
         filter: null
+        allowSubscriptions: true
 
 ---
 kind: Relationship

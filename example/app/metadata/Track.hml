@@ -190,14 +190,20 @@ definition:
   graphql:
     selectMany:
       queryRootField: track
+      subscription:
+        rootField: track
     selectUniques:
       - queryRootField: trackByTrackId
         uniqueIdentifier:
           - trackId
+        subscription:
+          rootField: trackByTrackId
     orderByExpressionType: TrackOrderBy
     filterInputTypeName: TrackFilterInput
     aggregate:
       queryRootField: trackAggregate
+      subscription:
+        rootField: trackAggregate
 
 ---
 kind: ModelPermissions
@@ -208,6 +214,7 @@ definition:
     - role: admin
       select:
         filter: null
+        allowSubscriptions: true
 
 ---
 kind: Relationship

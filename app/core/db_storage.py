@@ -1,6 +1,8 @@
+import hashlib
 import json
 from typing import Dict, List, Optional, Type
 from datetime import datetime, timedelta
+from graphql import parse, visit, Visitor, GraphQLError
 from sqlalchemy import create_engine, Column, String, DateTime, Integer, Float, ForeignKey, Boolean, Text, Enum, Index
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import relationship, sessionmaker
@@ -73,7 +75,207 @@ class AnomalyRecord(Base):
 
     # Relationships
     analysis = relationship("AnomalyAnalysis", back_populates="records")
-    field_stats = relationship("FieldStatistic", back_populates="record")
+    field_statistics = relationship("FieldStatistic", back_populates="record")
+
+
+class QueryFeature(Base):
+    __tablename__ = 'query_features'
+
+    id = Column(Integer, primary_key=True)
+    pattern_id = Column(Integer, ForeignKey('query_patterns.id'), nullable=False)
+    feature_name = Column(String(50), nullable=False)
+    feature_value = Column(Float, nullable=False)
+    feature_type = Column(String(10), nullable=False)  # 'int', 'bool', or 'float'
+
+    pattern = relationship("QueryPattern", back_populates="features")
+
+    __table_args__ = (
+        Index('idx_query_features_pattern_name', 'pattern_id', 'feature_name'),
+        Index('idx_query_features_name_value', 'feature_name', 'feature_value'),
+    )
+
+    def get_typed_value(self):
+        """Return the feature value converted to its proper type"""
+        if self.feature_type == 'int':
+            return int(self.feature_value)
+        elif self.feature_type == 'bool':
+            return bool(self.feature_value)
+        return self.feature_value
+
+
+class QueryPattern(Base):
+    __tablename__ = 'query_patterns'
+
+    id = Column(Integer, primary_key=True)
+    query_hash = Column(String(32), nullable=False, index=True)
+    operation_name = Column(String(255), nullable=True)
+    query_text = Column(Text, nullable=False)
+    variables_json = Column(Text, nullable=True)
+    complexity_score = Column(Float, nullable=False)
+    user_role = Column(String(50), nullable=False)
+    is_anomalous = Column(Boolean, default=False)
+    created_at = Column(DateTime(timezone=True), default=func.now(), nullable=False)
+
+    features = relationship("QueryFeature", back_populates="pattern", cascade="all, delete-orphan")
+
+    __table_args__ = (
+        Index('idx_query_patterns_hash_role', 'query_hash', 'user_role'),
+        Index('idx_query_patterns_created', 'created_at'),
+        Index('idx_query_patterns_anomaly', 'is_anomalous'),
+    )
+
+    class GraphQLAnalyzer(Visitor):
+        def __init__(self):
+            super().__init__()  # Call parent class constructor
+            self.depth = 0
+            self.max_depth = 0
+            self.fields = set()
+            self.arguments = []
+            self.variables = set()
+            self.operation_name = None
+
+        def enter(self, node, *args):
+            if hasattr(node, 'kind'):
+                # Handle operation definition
+                if node.kind == 'operation_definition':
+                    if hasattr(node, 'name') and node.name:
+                        self.operation_name = node.name.value
+                    if hasattr(node, 'variable_definitions') and node.variable_definitions:
+                        self.variables.update(var.variable.name.value for var in node.variable_definitions)
+
+                # Handle field
+                elif node.kind == 'field':
+                    self.depth += 1
+                    self.max_depth = max(self.max_depth, self.depth)
+
+                    if hasattr(node, 'name') and not node.name.value.startswith('__'):
+                        self.fields.add(node.name.value)
+
+                    if hasattr(node, 'arguments') and node.arguments:
+                        self.arguments.extend(arg.name.value for arg in node.arguments)
+
+        def leave(self, node, *args):
+            if hasattr(node, 'kind') and node.kind == 'field':
+                self.depth -= 1
+
+    @classmethod
+    def create_and_store_from_query(cls, session, query_text: str, variables_json: Optional[str],
+                                    user_role: str, is_anomalous: bool) -> 'QueryPattern':
+        """Create, analyze, and store a QueryPattern instance from a GraphQL query"""
+        try:
+            # Parse the query
+            ast = parse(query_text)
+            analyzer = cls.GraphQLAnalyzer()
+            visit(ast, analyzer)
+
+            # Parse variables JSON
+            variables = variables_json if variables_json else {}
+
+            # Compute pagination/filtering/sorting flags
+            pagination_args = {'first', 'last', 'limit', 'offset', 'page', 'pageSize'}
+            filter_args = {'filter', 'where', 'search', 'query', 'conditions'}
+            sort_args = {'orderBy', 'sortBy', 'sort', 'order', 'orderByDirection'}
+
+            arg_set = set(analyzer.arguments)
+            has_pagination = bool(pagination_args & arg_set)
+            has_filtering = bool(filter_args & arg_set)
+            has_sorting = bool(sort_args & arg_set)
+
+            # Calculate complexity score
+            complexity_score = (
+                    len(analyzer.fields) * 2.0 +  # Base score from fields
+                    analyzer.max_depth * 3.0 +  # Depth multiplier
+                    len(analyzer.arguments) * 1.5  # Argument complexity
+            )
+
+            # Create pattern instance
+            pattern = cls(
+                query_hash=hashlib.md5(f"{query_text}{variables_json}".encode()).hexdigest(),
+                operation_name=analyzer.operation_name,
+                query_text=query_text,
+                variables_json=json.dumps(variables_json),
+                complexity_score=round(complexity_score, 2),
+                user_role=user_role,
+                is_anomalous=is_anomalous
+            )
+
+            # Create features
+            pattern.features = [
+                QueryFeature(
+                    feature_name='query_length',
+                    feature_value=float(len(query_text)),
+                    feature_type='int'
+                ),
+                QueryFeature(
+                    feature_name='depth',
+                    feature_value=float(analyzer.max_depth),
+                    feature_type='int'
+                ),
+                QueryFeature(
+                    feature_name='fields',
+                    feature_value=float(len(analyzer.fields)),
+                    feature_type='int'
+                ),
+                QueryFeature(
+                    feature_name='arguments',
+                    feature_value=float(len(analyzer.arguments)),
+                    feature_type='int'
+                ),
+                QueryFeature(
+                    feature_name='variables',
+                    feature_value=float(len(analyzer.variables)),
+                    feature_type='int'
+                ),
+                QueryFeature(
+                    feature_name='has_pagination',
+                    feature_value=float(has_pagination),
+                    feature_type='bool'
+                ),
+                QueryFeature(
+                    feature_name='has_filtering',
+                    feature_value=float(has_filtering),
+                    feature_type='bool'
+                ),
+                QueryFeature(
+                    feature_name='has_sorting',
+                    feature_value=float(has_sorting),
+                    feature_type='bool'
+                ),
+                QueryFeature(
+                    feature_name='complexity_score',
+                    feature_value=complexity_score,
+                    feature_type='float'
+                )
+            ]
+
+            # Store in database
+            session.add(pattern)
+            session.commit()
+
+            return pattern
+
+        except GraphQLError as e:
+            session.rollback()
+            raise ValueError(f"Invalid GraphQL query: {str(e)}")
+        except json.JSONDecodeError:
+            session.rollback()
+            raise ValueError("Invalid variables JSON")
+        except Exception as e:
+            session.rollback()
+            raise ValueError(f"Error analyzing query: {str(e)}")
+
+    def get_feature_value(self, feature_name: str):
+        """Helper method to get a specific feature value"""
+        feature = next((f for f in self.features if f.feature_name == feature_name), None)
+        if feature:
+            return feature.get_typed_value()
+        return None
+
+    def __repr__(self):
+        return (f"<QueryPattern(id={self.id}, "
+                f"operation_name='{self.operation_name}', "
+                f"complexity_score={self.complexity_score}, "
+                f"is_anomalous={self.is_anomalous})>")
 
 
 class QueryConcern(Base):
@@ -115,8 +317,8 @@ class FieldStatistic(Base):
     std_dev = Column(Float)
 
     # Relationships
-    record = relationship("AnomalyRecord", back_populates="field_stats")
-    value_distribution = relationship("ValueDistribution", back_populates="field_statistic")
+    record = relationship("AnomalyRecord", back_populates="field_statistics")  # Changed from field_stats
+    value_distributions = relationship("ValueDistribution", back_populates="field_statistic")  # Changed to plural
 
 
 class ValueDistribution(Base):
@@ -128,7 +330,7 @@ class ValueDistribution(Base):
     count = Column(Integer)
 
     # Relationships
-    field_statistic = relationship("FieldStatistic", back_populates="value_distribution")
+    field_statistic = relationship("FieldStatistic", back_populates="value_distributions")  # Changed to plural
 
 
 class StatisticalFlag(Base):
@@ -268,36 +470,6 @@ class DatabaseStorage:
             self.logger.error(f"Error during complete data cleanup: {str(e)}")
             raise
 
-    def remove_historical_data(self, query_id: str, records_to_remove: List[Dict]):
-        """Remove specified records from the historical data in the database"""
-        session = self.Session()
-        try:
-            # Get the historical data record for the given query_id
-            historical_data = session.query(HistoricalData).filter_by(query_id=query_id).first()
-
-            if historical_data:
-                # Load the existing data
-                data = json.loads(historical_data.data)
-
-                # Remove the specified records
-                data = [record for record in data if record not in records_to_remove]
-
-                # Update the historical data record with the modified data
-                historical_data.data = json.dumps(data)
-                historical_data.record_count = len(data)
-                historical_data.last_updated = func.now()
-
-                session.commit()
-                self.logger.debug(f"Removed {len(records_to_remove)} records for query_hash {query_id}")
-            else:
-                self.logger.warning(f"No historical data found for query_id: {query_id}")
-
-        except Exception as e:
-            session.rollback()
-            self.logger.error(f"Error removing historical data for {query_id}: {str(e)}")
-            raise
-        finally:
-            session.close()
 
     def cleanup_historical_data(self) -> int:
         """Clean up historical data based on retention period"""
@@ -331,9 +503,9 @@ class DatabaseStorage:
                 return 0
 
             # Delete related records first
-            for table in [StatisticalFlag, Recommendation, QueryConcern, AnomalyRecord]:
-                session.query(table).filter(
-                    table.analysis_id.in_(old_analysis_ids)
+            for table_class in [StatisticalFlag, Recommendation, QueryConcern, AnomalyRecord]:
+                session.query(table_class).filter(
+                    getattr(table_class, 'analysis_id').in_(old_analysis_ids)
                 ).delete(synchronize_session=False)
 
             # Finally delete the analyses
@@ -365,49 +537,47 @@ class DatabaseStorage:
     def _store_field_statistics(self, session, record_id: int, field_stats: Dict):
         """Store field statistics and value distributions for a record"""
         self.logger.debug(f"Starting _store_field_statistics for record_id: {record_id}")
-        self.logger.debug(f"Field stats keys: {list(field_stats.keys())}")
 
-        for field_name, field_data in field_stats.items():
-            stats = field_data.get('stats', {})
-            if not stats:
-                self.logger.debug(f"No stats found for field: {field_name}")
-                continue
+        try:
+            for field_name, field_data in field_stats.items():
+                stats = field_data.get('stats', {})
+                if not stats:
+                    self.logger.debug(f"No stats found for field: {field_name}")
+                    continue
 
-            self.logger.debug(f"Processing field: {field_name}, type: {field_data.get('type')}")
-            self.logger.debug(f"Stats for {field_name}: {stats}")
-
-            # Create field statistics record
-            field_stat = FieldStatistic(
-                record_id=record_id,
-                field_name=field_name,
-                field_type=field_data.get('type'),
-                avg_length=stats.get('avg_length'),
-                unique_count=stats.get('unique_count'),
-                uniqueness_ratio=stats.get('uniqueness_ratio'),
-                min_value=field_data.get('numeric_stats', {}).get('stats', {}).get('min'),
-                max_value=field_data.get('numeric_stats', {}).get('stats', {}).get('max'),
-                mean_value=field_data.get('numeric_stats', {}).get('stats', {}).get('mean'),
-                median_value=field_data.get('numeric_stats', {}).get('stats', {}).get('median'),
-                std_dev=field_data.get('numeric_stats', {}).get('stats', {}).get('std')
-            )
-            session.add(field_stat)
-            session.flush()
-            self.logger.debug(f"Created field statistic record for {field_name} with id: {field_stat.id}")
-
-            # Store value distribution for this field
-            value_dist = stats.get('value_distribution', {})
-            self.logger.debug(f"Value distribution for {field_name}: {value_dist}")
-
-            for value, count in value_dist.items():
-                dist_record = ValueDistribution(
-                    field_statistic=field_stat,
-                    value=str(value),
-                    count=count
+                # Create field statistics record
+                field_stat = FieldStatistic(
+                    record_id=record_id,
+                    field_name=field_name,
+                    field_type=field_data.get('type'),
+                    avg_length=stats.get('avg_length'),
+                    unique_count=stats.get('unique_count'),
+                    uniqueness_ratio=stats.get('uniqueness_ratio'),
+                    min_value=field_data.get('numeric_stats', {}).get('min'),
+                    max_value=field_data.get('numeric_stats', {}).get('max'),
+                    mean_value=field_data.get('numeric_stats', {}).get('mean'),
+                    median_value=field_data.get('numeric_stats', {}).get('median'),
+                    std_dev=field_data.get('numeric_stats', {}).get('std')
                 )
-                session.add(dist_record)
-                self.logger.debug(f"Added value distribution record for {field_name}: {value}={count}")
+                session.add(field_stat)
+                session.flush()
 
-        self.logger.debug("Completed _store_field_statistics")
+                # Store value distributions for this field
+                value_dist = stats.get('value_distribution', {})
+                for value, count in value_dist.items():
+                    dist_record = ValueDistribution(
+                        field_statistic_id=field_stat.id,
+                        value=str(value),
+                        count=count
+                    )
+                    session.add(dist_record)
+
+            session.flush()
+            self.logger.debug("Successfully stored field statistics and distributions")
+
+        except Exception as e:
+            self.logger.error(f"Error in _store_field_statistics: {str(e)}", exc_info=True)
+            raise
 
     def store_anomaly(self, query_id: str, query_result: Dict, context: Dict, analysis_result: Dict) -> Optional[int]:
         """Store anomaly results in normalized database tables"""
@@ -439,12 +609,12 @@ class DatabaseStorage:
                 status=analysis_result.get("metadata", {}).get("status")
             )
             session.add(analysis)
-            session.flush()
+            session.flush()  # Flush to get the analysis.id
             self.logger.debug(f"Created main analysis record with id: {analysis.id}")
 
             # Create a base record for overall statistics
             base_record = AnomalyRecord(
-                analysis=analysis,
+                analysis_id=analysis.id,  # Use analysis_id instead of analysis relationship
                 category="overall_statistics",
                 reason="Dataset-wide statistics",
                 record_index=-1,
@@ -455,7 +625,6 @@ class DatabaseStorage:
             self.logger.debug(f"Created base record for statistics with id: {base_record.id}")
 
             # Store field statistics and value distributions
-            # Fix: Get field stats from the correct path in query_analysis
             field_stats = query_analysis.get("statistical_analysis", {}).get("new_data_stats", {}).get("fields", {})
             if field_stats:
                 self.logger.debug(f"Found field stats with keys: {list(field_stats.keys())}")
@@ -469,7 +638,7 @@ class DatabaseStorage:
 
             for record in anomaly_records:
                 anomaly_record = AnomalyRecord(
-                    analysis=analysis,
+                    analysis_id=analysis.id,  # Use analysis_id instead of analysis relationship
                     category=record.get('category'),
                     reason=record.get('reason'),
                     record_index=record.get('record_index'),
@@ -481,7 +650,7 @@ class DatabaseStorage:
 
                 # Create statistical flags for each anomaly
                 session.add(StatisticalFlag(
-                    analysis=analysis,
+                    analysis_id=analysis.id,  # Use analysis_id instead of analysis relationship
                     flag_type=record.get('category', 'unknown'),
                     description=record.get('reason', ''),
                     severity=self._get_severity_value(record.get('risk_level', 'low'))
@@ -493,7 +662,7 @@ class DatabaseStorage:
             self.logger.debug(f"Processing {len(concerns)} concerns")
             for concern in concerns:
                 session.add(QueryConcern(
-                    analysis=analysis,
+                    analysis_id=analysis.id,  # Use analysis_id instead of analysis relationship
                     description=concern
                 ))
 
@@ -502,7 +671,7 @@ class DatabaseStorage:
             self.logger.debug(f"Processing {len(recommendations)} recommendations")
             for recommendation in recommendations:
                 session.add(Recommendation(
-                    analysis=analysis,
+                    analysis_id=analysis.id,  # Use analysis_id instead of analysis relationship
                     description=recommendation
                 ))
 
@@ -517,13 +686,55 @@ class DatabaseStorage:
         finally:
             session.close()
 
+    def save_historical_data(self, query_id: str, data: List[Dict]) -> bool:
+        """Save historical data for a query"""
+        session = self.Session()
+        try:
+            # Find or create historical data record
+            historical_data = session.query(HistoricalData).filter_by(query_id=query_id).first()
+            if not historical_data:
+                historical_data = HistoricalData(
+                    query_id=query_id,
+                    record_count=len(data)
+                )
+                session.add(historical_data)
+                session.flush()
+
+            # Delete existing records if updating
+            if historical_data.historical_records:
+                for record in historical_data.historical_records:
+                    session.delete(record)
+
+            # Create new historical records
+            for item in data:
+                record = HistoricalRecord(
+                    historical_data_id=historical_data.id,
+                    record_data=json.dumps(item)
+                )
+                session.add(record)
+
+            historical_data.record_count = len(data)
+            historical_data.last_updated = func.now()
+
+            session.commit()
+            return True
+        except Exception as e:
+            session.rollback()
+            self.logger.error(f"Error saving historical data for {query_id}: {str(e)}")
+            raise
+        finally:
+            session.close()
+
     def load_historical_data(self, query_id: str) -> List[Dict]:
         """Load historical data for a query"""
         session = self.Session()
         try:
-            record = session.query(HistoricalData).filter_by(query_id=query_id).first()
-            if record:
-                return json.loads(record.data)
+            historical_data = session.query(HistoricalData).filter_by(query_id=query_id).first()
+            if historical_data and historical_data.historical_records:
+                return [
+                    json.loads(record.record_data)
+                    for record in historical_data.historical_records
+                ]
             return []
         except Exception as e:
             self.logger.error(f"Error loading historical data for {query_id}: {str(e)}")
@@ -531,28 +742,33 @@ class DatabaseStorage:
         finally:
             session.close()
 
-    def save_historical_data(self, query_id: str, data: List[Dict]) -> bool:
-        """Save historical data for a query"""
+    def remove_historical_data(self, query_id: str, records_to_remove: List[Dict]):
+        """Remove specified records from the historical data in the database"""
         session = self.Session()
         try:
-            record = session.query(HistoricalData).filter_by(query_id=query_id).first()
-            if record:
-                record.data = json.dumps(data)
-                record.record_count = len(data)
-                record.last_updated = func.now()
-            else:
-                record = HistoricalData(
-                    query_id=query_id,
-                    data=json.dumps(data),
-                    record_count=len(data)
-                )
-                session.add(record)
+            historical_data = session.query(HistoricalData).filter_by(query_id=query_id).first()
+            if historical_data:
+                records_json = [json.dumps(record) for record in records_to_remove]
+                removed_count = 0
 
-            session.commit()
-            return True
+                # Remove matching records
+                for record in historical_data.historical_records[:]:  # Create a copy of the list
+                    if record.record_data in records_json:
+                        session.delete(record)
+                        removed_count += 1
+
+                # Update record count
+                historical_data.record_count -= removed_count
+                historical_data.last_updated = func.now()
+
+                session.commit()
+                self.logger.debug(f"Removed {removed_count} records for query_hash {query_id}")
+            else:
+                self.logger.warning(f"No historical data found for query_id: {query_id}")
+
         except Exception as e:
             session.rollback()
-            self.logger.error(f"Error saving historical data for {query_id}: {str(e)}")
+            self.logger.error(f"Error removing historical data for {query_id}: {str(e)}")
             raise
         finally:
             session.close()
@@ -591,16 +807,45 @@ class DatabaseStorage:
         finally:
             session.close()
 
+    def save_query_pattern(self, query_text: str, variables_json: Optional[str],
+                                    user_role: str, is_anomalous: bool):
+        QueryPattern.create_and_store_from_query(
+            self.Session(),
+            query_text=query_text,
+            variables_json=variables_json,
+            user_role=user_role,
+            is_anomalous=is_anomalous
+    )
+
 class HistoricalData(Base):
     __tablename__ = 'historical_data'
 
     id = Column(Integer, primary_key=True)
     query_id = Column(String(255), nullable=False, index=True)
-    data = Column(Text, nullable=False)  # JSON blob
+    record_count = Column(Integer, default=0)
     last_updated = Column(DateTime(timezone=True), default=func.now(), onupdate=func.now())
     created_at = Column(DateTime(timezone=True), default=func.now())
-    record_count = Column(Integer, default=0)
+
+    # Relationship to HistoricalRecords
+    historical_records = relationship("HistoricalRecord", back_populates="historical_data", cascade="all, delete-orphan")
 
     __table_args__ = (
         Index('idx_query_updated', 'query_id', 'last_updated'),
     )
+
+class HistoricalRecord(Base):
+    __tablename__ = 'historical_records'
+
+    id = Column(Integer, primary_key=True)
+    historical_data_id = Column(Integer, ForeignKey('historical_data.id'), nullable=False)
+    record_data = Column(Text, nullable=False)  # JSON blob for individual record
+    last_updated = Column(DateTime(timezone=True), default=func.now(), onupdate=func.now())
+    created_at = Column(DateTime(timezone=True), default=func.now())
+
+    # Relationship to HistoricalData
+    historical_data = relationship("HistoricalData", back_populates="historical_records")
+
+    __table_args__ = (
+        Index('idx_historical_data', 'historical_data_id'),
+    )
+

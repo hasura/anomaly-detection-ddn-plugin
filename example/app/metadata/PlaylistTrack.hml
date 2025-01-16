@@ -96,15 +96,21 @@ definition:
   graphql:
     selectMany:
       queryRootField: playlistTrack
+      subscription:
+        rootField: playlistTrack
     selectUniques:
       - queryRootField: playlistTrackByPkPlaylistTrack
         uniqueIdentifier:
           - playlistId
           - trackId
+        subscription:
+          rootField: playlistTrackByPkPlaylistTrack
     orderByExpressionType: PlaylistTrackOrderBy
     filterInputTypeName: PlaylistTrackFilterInput
     aggregate:
       queryRootField: playlistTrackAggregate
+      subscription:
+        rootField: playlistTrackAggregate
 
 ---
 kind: ModelPermissions
@@ -115,6 +121,7 @@ definition:
     - role: admin
       select:
         filter: null
+        allowSubscriptions: true
 
 ---
 kind: Relationship

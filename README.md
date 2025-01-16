@@ -120,26 +120,6 @@ DB_PASSWORD=your-password           # Database password
 LOG_LEVEL=DEBUG                      # Logging level (DEBUG, INFO, WARNING, ERROR)
 ```
 
-### Database Connection Strings
-
-Configure your database connection using the appropriate SQLAlchemy URL format:
-
-```bash
-# PostgreSQL
-DATABASE_URL=postgresql://user:password@localhost:5432/dbname
-
-# MySQL
-DATABASE_URL=mysql://user:password@localhost:3306/dbname
-
-# SQLite
-DATABASE_URL=sqlite:///path/to/database.db
-
-# Oracle
-DATABASE_URL=oracle://user:password@localhost:1521/dbname
-
-# Microsoft SQL Server
-DATABASE_URL=mssql+pyodbc://user:password@localhost:1433/dbname?driver=ODBC+Driver+17+for+SQL+Server
-```
 
 ### Notes on Database Selection
 
@@ -165,64 +145,6 @@ DATABASE_URL=mssql+pyodbc://user:password@localhost:1433/dbname?driver=ODBC+Driv
 
 ## Usage
 
-### Basic Setup
-
-1. Initialize the database:
-```python
-from app.core.db_storage import DatabaseStorage
-
-# PostgreSQL
-db_storage = DatabaseStorage(
-    connection_url="postgresql://user:password@localhost:5432/anomaly_detector",
-    historical_retention_days=14
-)
-
-# Or MySQL
-db_storage = DatabaseStorage(
-    connection_url="mysql://user:password@localhost:3306/anomaly_detector",
-    historical_retention_days=14
-)
-
-# Or SQLite for development
-db_storage = DatabaseStorage(
-    connection_url="sqlite:///anomaly_detector.db",
-    historical_retention_days=14
-)
-```
-
-2. Create the hybrid detector:
-```python
-from app.core.hybrid_detector import EfficientHybridDetector
-
-detector = EfficientHybridDetector(
-    db_storage=db_storage,
-    anthropic_api_key="your_api_key"
-)
-```
-
-### Example Integration
-
-```python
-from flask import Flask
-from app.api.routes import create_routes
-
-app = Flask(__name__)
-
-# Configure app
-app.config.from_object('config.default')
-
-# Initialize detector
-detector = EfficientHybridDetector(
-    db_storage=DatabaseStorage(app.config['DATABASE_URL']),
-    anthropic_api_key=app.config['ANTHROPIC_API_KEY']
-)
-
-# Create routes
-app = create_routes(app, detector)
-
-if __name__ == '__main__':
-    app.run(debug=True)
-```
 
 ### API Endpoints
 
@@ -239,9 +161,10 @@ if __name__ == '__main__':
 Check out the `example` directory for a complete working example:
 
 ```bash
+# After updating .env and ./example/.env
+python server.py
 cd example
-python setup_example.py
-python run_example.py
+ddn run docker-start
 ```
 
 Example request:
@@ -307,58 +230,9 @@ The system consists of several key components:
 
 ## Roadmap
 
-### LLM Integration Enhancements
-
-1. **Multi-LLM Support**
-   - Add support for multiple LLM providers:
-     - OpenAI GPT-4 and GPT-3.5
-     - Google Gemini
-     - Mistral AI
-     - Local LLMs (e.g., Llama 2)
-   - Implement provider-agnostic interface for easy integration
-   - Add configuration options for model selection and fallback strategies
-
-2. **LLM Feature Improvements**
-   - Implement response caching for similar queries
-   - Add streaming responses for large datasets
-   - Develop prompt templates optimization
-   - Create specialized prompts for different data types
-   - Implement cost optimization strategies
-   - Add batching for multiple queries
-
-3. **Enhanced Analysis Capabilities**
-   - Domain-specific analysis patterns
-   - Custom prompt engineering tools
-   - Improved context handling
-   - Multi-language support
-   - Advanced security analysis patterns
-
 ### Future Enhancements
 
-1. **Performance Optimization**
-   - Implement query result caching
-   - Add batch processing improvements
-   - Optimize database operations
-   - Add support for distributed processing
-
-2. **Security Features**
-   - Enhanced role-based access control
-   - Query pattern blacklisting
-   - Advanced threat detection
-   - Custom security rules engine
-
-3. **Monitoring and Observability**
-   - Advanced metrics dashboard
-   - Real-time monitoring
-   - Alert system integration
-   - Performance analytics
-
-4. **Integration Features**
-   - Support for additional databases
-   - REST API expansion
-   - GraphQL API support
-   - Webhook integrations
-   - Third-party tool integrations
+Improvements from a simple sliding window to a more sophisticated seasonality approach.
 
 ## Troubleshooting
 
@@ -408,26 +282,6 @@ The system consists of several key components:
    - Ensure sufficient historical data
    - Check data format consistency
    - Verify database indexes
-
-### Performance Optimization
-
-1. **Memory Usage**
-   - Adjust MAX_HISTORICAL_RECORDS in config
-   - Implement batch processing for large datasets
-   - Monitor memory consumption
-   - Use appropriate database indexes
-
-2. **Response Times**
-   - Enable database query caching
-   - Optimize database queries
-   - Configure appropriate batch sizes
-   - Use database-specific optimizations
-
-3. **Database-Specific Optimizations**
-   - PostgreSQL: Enable appropriate extensions
-   - MySQL: Optimize InnoDB settings
-   - Oracle: Configure tablespaces
-   - MSSQL: Set up appropriate indices
 
 ## Contributing
 

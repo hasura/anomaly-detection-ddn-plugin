@@ -120,14 +120,20 @@ definition:
   graphql:
     selectMany:
       queryRootField: actor
+      subscription:
+        rootField: actor
     selectUniques:
       - queryRootField: actorByActorId
         uniqueIdentifier:
           - actorId
+        subscription:
+          rootField: actorByActorId
     orderByExpressionType: ActorOrderBy
     filterInputTypeName: ActorFilterInput
     aggregate:
       queryRootField: actorAggregate
+      subscription:
+        rootField: actorAggregate
 
 ---
 kind: ModelPermissions
@@ -138,4 +144,5 @@ definition:
     - role: admin
       select:
         filter: null
+        allowSubscriptions: true
 

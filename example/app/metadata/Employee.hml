@@ -266,14 +266,20 @@ definition:
   graphql:
     selectMany:
       queryRootField: employee
+      subscription:
+        rootField: employee
     selectUniques:
       - queryRootField: employeeByEmployeeId
         uniqueIdentifier:
           - employeeId
+        subscription:
+          rootField: employeeByEmployeeId
     orderByExpressionType: EmployeeOrderBy
     filterInputTypeName: EmployeeFilterInput
     aggregate:
       queryRootField: employeeAggregate
+      subscription:
+        rootField: employeeAggregate
 
 ---
 kind: ModelPermissions
@@ -284,6 +290,7 @@ definition:
     - role: admin
       select:
         filter: null
+        allowSubscriptions: true
 
 ---
 kind: Relationship

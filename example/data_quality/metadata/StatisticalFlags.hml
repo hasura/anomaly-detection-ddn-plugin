@@ -134,14 +134,20 @@ definition:
   graphql:
     selectMany:
       queryRootField: statisticalFlags
+      subscription:
+        rootField: statisticalFlags
     selectUniques:
       - queryRootField: statisticalFlagsById
         uniqueIdentifier:
           - id
+        subscription:
+          rootField: statisticalFlagsById
     orderByExpressionType: StatisticalFlagsOrderBy
     filterInputTypeName: StatisticalFlagsFilterInput
     aggregate:
       queryRootField: statisticalFlagsAggregate
+      subscription:
+        rootField: statisticalFlagsAggregate
 
 ---
 kind: ModelPermissions
@@ -152,6 +158,7 @@ definition:
     - role: admin
       select:
         filter: null
+        allowSubscriptions: true
 
 ---
 kind: Relationship

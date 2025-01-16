@@ -107,15 +107,21 @@ definition:
   graphql:
     selectMany:
       queryRootField: filmActor
+      subscription:
+        rootField: filmActor
     selectUniques:
       - queryRootField: filmActorByFilmActorPkey
         uniqueIdentifier:
           - actorId
           - filmId
+        subscription:
+          rootField: filmActorByFilmActorPkey
     orderByExpressionType: FilmActorOrderBy
     filterInputTypeName: FilmActorFilterInput
     aggregate:
       queryRootField: filmActorAggregate
+      subscription:
+        rootField: filmActorAggregate
 
 ---
 kind: ModelPermissions
@@ -126,4 +132,5 @@ definition:
     - role: admin
       select:
         filter: null
+        allowSubscriptions: true
 

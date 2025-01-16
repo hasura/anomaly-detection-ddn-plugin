@@ -5,7 +5,7 @@ from app.api.validators import require_headers, validate_request
 import logging
 
 from app.core.storage import AnomalyStorage
-from app.core.db_storage import DatabaseStorage
+from app.core.db_storage import DatabaseStorage, QueryPattern
 
 logger = logging.getLogger(__name__)
 
@@ -114,6 +114,13 @@ def create_routes(app, anomaly_service):
                         "status": "error",
                         "dataset": dataset_key
                     }
+
+            db_storage.save_query_pattern(
+                query_text=context.get('query'),
+                variables_json=context.get('variables'),
+                user_role=context.get('role'),
+                is_anomalous=total_anomalies > 0,
+            )
 
             response = {
                 "results": results,

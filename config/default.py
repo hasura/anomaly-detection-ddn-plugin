@@ -1,5 +1,8 @@
 import os
 from pathlib import Path
+import dotenv
+
+dotenv.load_dotenv()
 
 # Database configuration
 DB_HOST = os.getenv('DB_HOST', 'localhost')

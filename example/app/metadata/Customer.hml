@@ -239,14 +239,20 @@ definition:
   graphql:
     selectMany:
       queryRootField: customer
+      subscription:
+        rootField: customer
     selectUniques:
       - queryRootField: customerByCustomerId
         uniqueIdentifier:
           - customerId
+        subscription:
+          rootField: customerByCustomerId
     orderByExpressionType: CustomerOrderBy
     filterInputTypeName: CustomerFilterInput
     aggregate:
       queryRootField: customerAggregate
+      subscription:
+        rootField: customerAggregate
 
 ---
 kind: ModelPermissions
@@ -257,6 +263,7 @@ definition:
     - role: admin
       select:
         filter: null
+        allowSubscriptions: true
 
 ---
 kind: Relationship

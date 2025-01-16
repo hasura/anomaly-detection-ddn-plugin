@@ -159,14 +159,20 @@ definition:
   graphql:
     selectMany:
       queryRootField: trainedModels
+      subscription:
+        rootField: trainedModels
     selectUniques:
       - queryRootField: trainedModelsById
         uniqueIdentifier:
           - id
+        subscription:
+          rootField: trainedModelsById
     orderByExpressionType: TrainedModelsOrderBy
     filterInputTypeName: TrainedModelsFilterInput
     aggregate:
       queryRootField: trainedModelsAggregate
+      subscription:
+        rootField: trainedModelsAggregate
 
 ---
 kind: ModelPermissions
@@ -177,4 +183,5 @@ definition:
     - role: admin
       select:
         filter: null
+        allowSubscriptions: true
 

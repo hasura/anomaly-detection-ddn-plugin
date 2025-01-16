@@ -226,14 +226,20 @@ definition:
   graphql:
     selectMany:
       queryRootField: fieldStatistics
+      subscription:
+        rootField: fieldStatistics
     selectUniques:
       - queryRootField: fieldStatisticsById
         uniqueIdentifier:
           - id
+        subscription:
+          rootField: fieldStatisticsById
     orderByExpressionType: FieldStatisticsOrderBy
     filterInputTypeName: FieldStatisticsFilterInput
     aggregate:
       queryRootField: fieldStatisticsAggregate
+      subscription:
+        rootField: fieldStatisticsAggregate
 
 ---
 kind: ModelPermissions
@@ -244,6 +250,7 @@ definition:
     - role: admin
       select:
         filter: null
+        allowSubscriptions: true
 
 ---
 kind: Relationship

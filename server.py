@@ -9,9 +9,82 @@ import config.default as config
 import argparse
 import os
 import logging
+import signal
+import socket
+from werkzeug.serving import make_server
+import atexit
+import threading
 
 logger = logging.getLogger(__name__)
 
+class ServerManager:
+    def __init__(self):
+        self.server = None
+        self._setup_signal_handlers()
+        self._shutdown_event = threading.Event()
+
+    def _setup_signal_handlers(self):
+        for sig in [signal.SIGINT, signal.SIGTERM]:
+            signal.signal(sig, self._signal_handler)
+
+    def _signal_handler(self, signum, frame):
+        logger.info(f"Received signal {signum}")
+        self._shutdown_event.set()
+        self.cleanup()
+
+    def cleanup(self, *args):
+        if self.server:
+            logger.info("Shutting down server...")
+            try:
+                # Close all active connections
+                if hasattr(self.server, 'socket'):
+                    self.server.socket.close()
+                self.server.shutdown()
+            except Exception as e:
+                logger.error(f"Error during server shutdown: {e}")
+
+            try:
+                # Force socket cleanup
+                for sock in socket.socket._defaultsock:
+                    try:
+                        sock.close()
+                    except:
+                        pass
+            except:
+                pass
+            logger.info("Server shutdown complete")
+
+    def run_server(self, app, host, port, debug):
+        try:
+            if debug:
+                # Register cleanup for debug mode
+                atexit.register(self.cleanup)
+                # Use werkzeug's debug server
+                self.server = make_server(host, port, app, threaded=True)
+                self.server._BaseServer__is_shut_down = threading.Event()  # Reset shutdown event
+                logger.info(f"Starting debug server on {host}:{port}")
+                self.server.serve_forever()
+            else:
+                # In production, use regular werkzeug server
+                self.server = make_server(host, port, app)
+                logger.info(f"Starting production server on {host}:{port}")
+                self.server.serve_forever()
+        except socket.error as e:
+            logger.error(f"Socket error: {e}")
+            # Try to force-close the port
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            try:
+                sock.bind((host, port))
+            except:
+                pass
+            finally:
+                sock.close()
+            raise
+        except Exception as e:
+            logger.error(f"Server error: {e}")
+            raise
+        finally:
+            self.cleanup()
 
 def create_app(config):
     app = Flask(__name__)
@@ -64,8 +137,16 @@ def main():
 
     app = create_app(config)
     logger.info(f"Starting server on {args.host}:{port}")
-    app.run(host=args.host, port=port, debug=args.debug)
-
+    server_manager = ServerManager()
+    try:
+        server_manager.run_server(app, args.host, port, args.debug)
+    except KeyboardInterrupt:
+        logger.info("Received keyboard interrupt, shutting down...")
+        server_manager.cleanup()
+    except Exception as e:
+        logger.error(f"Server error: {e}")
+        server_manager.cleanup()
+        raise
 
 if __name__ == '__main__':
     main()

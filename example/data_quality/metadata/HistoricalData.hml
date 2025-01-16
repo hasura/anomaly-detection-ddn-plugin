@@ -146,14 +146,20 @@ definition:
   graphql:
     selectMany:
       queryRootField: historicalData
+      subscription:
+        rootField: historicalData
     selectUniques:
       - queryRootField: historicalDataById
         uniqueIdentifier:
           - id
+        subscription:
+          rootField: historicalDataById
     orderByExpressionType: HistoricalDataOrderBy
     filterInputTypeName: HistoricalDataFilterInput
     aggregate:
       queryRootField: historicalDataAggregate
+      subscription:
+        rootField: historicalDataAggregate
 
 ---
 kind: ModelPermissions
@@ -164,4 +170,5 @@ definition:
     - role: admin
       select:
         filter: null
+        allowSubscriptions: true
 

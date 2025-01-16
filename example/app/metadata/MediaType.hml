@@ -95,14 +95,20 @@ definition:
   graphql:
     selectMany:
       queryRootField: mediaType
+      subscription:
+        rootField: mediaType
     selectUniques:
       - queryRootField: mediaTypeByMediaTypeId
         uniqueIdentifier:
           - mediaTypeId
+        subscription:
+          rootField: mediaTypeByMediaTypeId
     orderByExpressionType: MediaTypeOrderBy
     filterInputTypeName: MediaTypeFilterInput
     aggregate:
       queryRootField: mediaTypeAggregate
+      subscription:
+        rootField: mediaTypeAggregate
 
 ---
 kind: ModelPermissions
@@ -113,6 +119,7 @@ definition:
     - role: admin
       select:
         filter: null
+        allowSubscriptions: true
 
 ---
 kind: Relationship

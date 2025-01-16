@@ -108,14 +108,20 @@ definition:
   graphql:
     selectMany:
       queryRootField: recommendations
+      subscription:
+        rootField: recommendations
     selectUniques:
       - queryRootField: recommendationsById
         uniqueIdentifier:
           - id
+        subscription:
+          rootField: recommendationsById
     orderByExpressionType: RecommendationsOrderBy
     filterInputTypeName: RecommendationsFilterInput
     aggregate:
       queryRootField: recommendationsAggregate
+      subscription:
+        rootField: recommendationsAggregate
 
 ---
 kind: ModelPermissions
@@ -126,6 +132,7 @@ definition:
     - role: admin
       select:
         filter: null
+        allowSubscriptions: true
 
 ---
 kind: Relationship

@@ -187,14 +187,20 @@ definition:
   graphql:
     selectMany:
       queryRootField: invoice
+      subscription:
+        rootField: invoice
     selectUniques:
       - queryRootField: invoiceByInvoiceId
         uniqueIdentifier:
           - invoiceId
+        subscription:
+          rootField: invoiceByInvoiceId
     orderByExpressionType: InvoiceOrderBy
     filterInputTypeName: InvoiceFilterInput
     aggregate:
       queryRootField: invoiceAggregate
+      subscription:
+        rootField: invoiceAggregate
 
 ---
 kind: ModelPermissions
@@ -205,6 +211,7 @@ definition:
     - role: admin
       select:
         filter: null
+        allowSubscriptions: true
 
 ---
 kind: Relationship

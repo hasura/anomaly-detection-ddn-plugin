@@ -107,14 +107,20 @@ definition:
   graphql:
     selectMany:
       queryRootField: category
+      subscription:
+        rootField: category
     selectUniques:
       - queryRootField: categoryByCategoryId
         uniqueIdentifier:
           - categoryId
+        subscription:
+          rootField: categoryByCategoryId
     orderByExpressionType: CategoryOrderBy
     filterInputTypeName: CategoryFilterInput
     aggregate:
       queryRootField: categoryAggregate
+      subscription:
+        rootField: categoryAggregate
 
 ---
 kind: ModelPermissions
@@ -125,4 +131,5 @@ definition:
     - role: admin
       select:
         filter: null
+        allowSubscriptions: true
 
