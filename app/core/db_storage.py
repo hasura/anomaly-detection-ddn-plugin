@@ -625,9 +625,9 @@ class DatabaseStorage:
         try:
             for field_name, field_data in field_stats.items():
                 stats = field_data.get('stats', {})
-                if not stats:
-                    self.logger.debug(f"No stats found for field: {field_name}")
-                    continue
+                # if not stats:
+                #     self.logger.debug(f"No stats found for field: {field_name}")
+                #     continue
 
                 # Create field statistics record
                 field_stat = FieldStatistic(
@@ -635,7 +635,7 @@ class DatabaseStorage:
                     field_name=field_name,
                     field_type=field_data.get('type'),
                     avg_length=stats.get('avg_length'),
-                    unique_count=stats.get('unique_count'),
+                    unique_count=stats.get('unique_count', field_data.get('numeric_stats', {}).get('unique_count')),
                     uniqueness_ratio=stats.get('uniqueness_ratio'),
                     min_value=field_data.get('numeric_stats', {}).get('min'),
                     max_value=field_data.get('numeric_stats', {}).get('max'),

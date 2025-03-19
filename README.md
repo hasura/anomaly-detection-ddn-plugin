@@ -43,6 +43,10 @@ A powerful hybrid anomaly detection system for Hasura DDN (Data Delivery Network
 
 ## Installation
 
+This method will let you connect the anomaly detector plugin 
+to your data sources. See "Adding to an Existing Supergraph"
+for details on integrating with an existing supergraph.
+
 1. Clone the repository:
 ```bash
 git clone https://github.com/hasura/anomaly-detection-ddn-plugin
@@ -78,8 +82,88 @@ pip install pyodbc
 5. Set up environment variables:
 ```bash
 cp .env.sample .env
+cp example/.env.sample example/.env
 ```
 
+* Remember to update the environment variables to working values.
+
+6. Connect to your data
+* Remove the chinook connector and connect to your data source.
+
+```bash
+ddn connector remove chinook
+ddn connector init -i
+```
+
+## Adding to an Existing Supergraph
+1. Follow steps 1-5 above.
+2. In your existing supergraph compose.yaml, add:
+
+```yaml
+include:
+  - path: ../compose.yaml
+```
+
+And, add the env variables into `globals/subgraph.yaml`, like this:
+
+```yaml
+kind: Subgraph
+version: v2
+definition:
+  name: globals
+  generator:
+    rootPath: .
+  includePaths:
+    - metadata
+  envMapping:
+    ANOMALIES_URL:
+      fromEnv: ANOMALIES_URL
+    M_AUTH_KEY:
+      fromEnv: M_AUTH_KEY
+```
+Set the path to the compose.yaml file in the directory where you 
+installed the anomaly detector.
+
+This will add the anomaly detector service container to the supergraph start up.
+
+3. In your supergraph, copy the `example/globals/metadata/anomalies.hml` file to the same location within your supergraph.
+
+This adds the plugin definition to the supergraph
+
+4. In your supergraph .env file add.
+
+```env
+ANOMALIES_URL="http://local.hasura.dev:8787/anomalies"
+M_AUTH_KEY=secret
+ANTHROPIC_API_KEY=<do-your-own>
+```
+
+5. Start the supergraph
+
+```bash
+ddn run docker-start
+```
+
+This will create the anomaly tables.
+
+6. Expose the anomaly tables into the same supergraph or to another of your choice so that you can run PromptQL against the results.
+
+```bash
+# Create the subgraph
+ddn subgraph init data_quality
+# Add it to the supergraph
+ddn subgraph add --subgraph data_quality/subgraph.yaml --target-supergraph supergraph.yaml
+# Create the data connector
+ddn connector init --subgraph data_quality/subgraph.yaml -i
+# Get its metadata
+ddn connector introspect anomalies --subgraph data_quality/subgraph.yaml
+# Add the tables to the subgraph
+ddn model add anomalies "*" --subgraph data_quality/subgraph.yaml
+ddn relationship add anomalies "*" --subgraph data_quality/subgraph.yaml
+# Build and run the new supergraph
+ddn supergraph build local
+ddn run docker-start
+```
 ## Environment Variables
 
 Example `.env` configuration:
@@ -93,31 +177,34 @@ HOST=0.0.0.0              # Server host address
 ANOMALY_DETECTION_DATA=./tmp   # Directory for storing temporary files and data
 
 # Anthropic Configuration
-ANTHROPIC_API_KEY=your-api-key-here    # Your Anthropic API key
-CLAUDE_MODEL=claude-3-sonnet-20240229   # Specific Claude model to use
+ANTHROPIC_API_KEY=your-api-key-here     # Your Anthropic API key
+CLAUDE_MODEL=claude-3-7-sonnet-20250219 # Specific Claude model to use
 
 # Anomaly Detection Configuration
-MAX_RECORDS_PER_BATCH=50               # Maximum records to process in a single batch
-HISTORICAL_RETENTION_DAYS=14           # Days to keep historical data
-ANOMALY_RETENTION_DAYS=90             # Days to keep anomaly records
-MODEL_RETENTION_DAYS=360              # Days to keep trained models
-ANOMALY_THRESHOLD=0.1                 # Threshold for anomaly detection
-MINIMUM_TRAINING_RECORDS=100          # Minimum records required for model training
-MAX_HISTORICAL_RECORDS=100000         # Maximum historical records to store
+MAX_RECORDS_PER_BATCH=50                # Maximum records to process in a single batch
+HISTORICAL_RETENTION_DAYS=14            # Days to keep historical data
+ANOMALY_RETENTION_DAYS=90               # Days to keep anomaly records
+MODEL_RETENTION_DAYS=360                # Days to keep trained models
+ANOMALY_THRESHOLD=0.1                   # Threshold for anomaly detection
+MINIMUM_TRAINING_RECORDS=100            # Minimum records required for model training
+MAX_HISTORICAL_RECORDS=100000           # Maximum historical records to store
 
 # Processing Configuration
-MAX_TOKENS=100000                     # Maximum tokens for LLM requests
-MAX_RECORDS_PER_BATCH=50             # Maximum records to process in one batch
+MAX_TOKENS=100000                      # Maximum tokens for LLM requests
+MAX_RECORDS_PER_BATCH=50               # Maximum records to process in one batch
+EXCLUDED_DATASETS=anomalies_.*,dq_.*       # Datasets matching these patterns are not processed
 
 # Database Configuration
-DB_HOST=your-db-host                 # Database host address
-DB_PORT=5432                         # Database port
-DB_NAME=anomalies                    # Database name
-DB_USER=your-username               # Database username
-DB_PASSWORD=your-password           # Database password
+DB_HOST=your-db-host                  # Database host address
+DB_CONNECT_ARGS=json-dict-of-args     # Optional - can be used to specify a schema
+DB_PORT=5432                          # Database port
+DB_NAME=anomalies                     # Database name
+DB_USER=your-username                 # Database username
+DB_PASSWORD=your-password             # Database password
 
 # Logging
-LOG_LEVEL=DEBUG                      # Logging level (DEBUG, INFO, WARNING, ERROR)
+LOG_LEVEL=DEBUG                       # Logging level (DEBUG, INFO, WARNING, ERROR)
+
 ```
 
 

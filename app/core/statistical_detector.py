@@ -3,6 +3,8 @@ from datetime import datetime
 from typing import Dict, List
 
 import random
+
+import pandas as pd
 from sklearn.ensemble import IsolationForest
 from sklearn.preprocessing import StandardScaler
 
@@ -35,44 +37,80 @@ class PersistentAnomalyDetector:
 
     @staticmethod
     def _extract_features(record: Dict) -> List[float]:
-        """Extract numerical features from record"""
+        """Extract numerical features from record in a consistent, homogeneous manner"""
         try:
             logger.debug("[statistical_detector.py] Extracting features from record type: %s", type(record))
-            logger.debug("[statistical_detector.py] Record content: %s", record)
 
             # Handle nested data structure
             actual_data = record.get('data', record)
-            logger.debug("[statistical_detector.py] Actual data for processing: %s", actual_data)
 
             if not isinstance(actual_data, dict):
                 logger.error("[statistical_detector.py] Data is not a dictionary: %s", type(actual_data))
                 return []
 
+            # Extract all keys from the record
+            record_keys = sorted(actual_data.keys())
+            logger.debug("[statistical_detector.py] Found keys: %s", record_keys)
+
+            if not record_keys:
+                logger.warning("[statistical_detector.py] No keys found in record")
+                return []
+
+            # Extract features for each key
             features = []
+            for key in record_keys:
+                value = actual_data.get(key)
 
-            # Process dates into numerical features
-            for key, value in actual_data.items():
-                logger.debug("[statistical_detector.py] Processing field %s of type %s with value %s",
-                             key, type(value), value)
-
-                if isinstance(value, (int, float)):
+                # Convert the value to a numeric feature based on its type
+                if value is None:
+                    features.append(0.0)  # Default for None
+                elif isinstance(value, (int, float)):
                     features.append(float(value))
+                    logger.debug("[statistical_detector.py] Added numeric value %f for key %s", float(value), key)
                 elif isinstance(value, str):
-                    # Try to parse dates
-                    if 'date' in key.lower():
+                    # Try to parse dates if the key suggests it's a date
+                    if 'date' in key.lower() or 'time' in key.lower():
                         try:
-                            dt = datetime.strptime(value, "%Y-%m-%d %H:%M:%S")
-                            # Convert to timestamp for numerical analysis
-                            features.append(float(dt.timestamp()))
-                            logger.debug("[statistical_detector.py] Converted date %s to timestamp %f",
-                                         value, dt.timestamp())
+                            dt = pd.to_datetime(value)
+                            # Convert pandas Timestamp to float
+                            timestamp_value = float(dt.timestamp())
+                            features.append(timestamp_value)
+                            logger.debug("[statistical_detector.py] Converted date %s to timestamp %f for key %s",
+                                         value, timestamp_value, key)
                         except ValueError:
-                            logger.debug("[statistical_detector.py] Could not parse date: %s", value)
-                    # Try to parse numeric strings
-                    elif value.replace('.', '').isdigit():
+                            # If it's not a date, hash the string
+                            hash_value = hash(value) % 1000000  # Modulo to avoid extremely large values
+                            features.append(float(hash_value))
+                            logger.debug("[statistical_detector.py] Hashed string %s to %f for key %s",
+                                         value, hash_value, key)
+                    elif value.replace('.', '').replace('-', '').isdigit():
+                        # Handle numeric strings
                         features.append(float(value))
+                        logger.debug("[statistical_detector.py] Converted numeric string %s to float for key %s",
+                                     value, key)
+                    else:
+                        # Hash other strings
+                        hash_value = hash(value) % 1000000
+                        features.append(float(hash_value))
+                        logger.debug("[statistical_detector.py] Hashed string %s to %f for key %s",
+                                     value, hash_value, key)
+                elif isinstance(value, bool):
+                    features.append(1.0 if value else 0.0)
+                    logger.debug("[statistical_detector.py] Converted boolean %s to %f for key %s",
+                                 value, 1.0 if value else 0.0, key)
+                elif isinstance(value, list) or isinstance(value, dict):
+                    # For complex types, use their length
+                    features.append(float(len(value)))
+                    logger.debug("[statistical_detector.py] Converted complex type to length %f for key %s",
+                                 float(len(value)), key)
+                else:
+                    # For any other type, use a hash of its string representation
+                    hash_value = hash(str(value)) % 1000000
+                    features.append(float(hash_value))
+                    logger.debug("[statistical_detector.py] Hashed unknown type %s to %f for key %s",
+                                 type(value), hash_value, key)
 
-            logger.debug("[statistical_detector.py] Extracted features: %s", features)
+            logger.debug("[statistical_detector.py] Extracted %d features", len(features))
             return features
 
         except Exception as e:
@@ -82,6 +120,24 @@ class PersistentAnomalyDetector:
     def _train_model(self, query_id: str, historical_data: List[Dict]) -> Dict:
         logger.debug("[statistical_detector.py] Training new model for %s with %d records",
                      query_id, len(historical_data))
+
+        # First pass: collect all possible keys from all records
+        all_keys = set()
+        processed_records = []
+
+        for record in historical_data:
+            # Extract the actual data from the record
+            actual_data = record.get('data', record)
+            if isinstance(actual_data, dict):
+                processed_records.append(actual_data)
+                # Add all keys from this record
+                all_keys.update(actual_data.keys())
+
+        if not processed_records:
+            logger.error("[statistical_detector.py] No valid records for training")
+            raise ValueError("No valid records for training")
+
+        logger.debug("[statistical_detector.py] Collected %d unique keys across all records", len(all_keys))
 
         # Extract features from all records
         features_list = []
@@ -94,17 +150,32 @@ class PersistentAnomalyDetector:
             logger.error("[statistical_detector.py] No valid features extracted for training")
             raise ValueError("No valid features for training")
 
+        # Verify all feature vectors have the same length
+        feature_lengths = set(len(f) for f in features_list)
+        if len(feature_lengths) > 1:
+            logger.warning("[statistical_detector.py] Inconsistent feature lengths detected: %s", feature_lengths)
+            # Take the most common length and standardize
+            from collections import Counter
+            common_length = Counter(len(f) for f in features_list).most_common(1)[0][0]
+
+            # Filter to keep only feature vectors of the most common length
+            features_list = [f for f in features_list if len(f) == common_length]
+            logger.info("[statistical_detector.py] Filtered to %d features of length %d",
+                        len(features_list), common_length)
+
         try:
             # Check if the number of historical records exceeds the limit
             if len(historical_data) > MAX_HISTORICAL_RECORDS:
-                logger.info("[statistical_detector.py] Number of historical records (%d) exceeds the limit (%d), sampling records.",
-                            len(historical_data), MAX_HISTORICAL_RECORDS)
+                logger.info(
+                    "[statistical_detector.py] Number of historical records (%d) exceeds the limit (%d), sampling records.",
+                    len(historical_data), MAX_HISTORICAL_RECORDS)
                 # Calculate the number of records to remove
                 overage = len(historical_data) - MAX_HISTORICAL_RECORDS
                 # Sample the records to remove
                 records_to_remove = random.choices(historical_data, k=overage)
                 # Remove the sampled records from the historical data
                 historical_data = [record for record in historical_data if record not in records_to_remove]
+
                 # Recalculate the features_list
                 features_list = []
                 for record in historical_data:
@@ -141,6 +212,122 @@ class PersistentAnomalyDetector:
 
         except Exception as e:
             logger.error("[statistical_detector.py] Error training model for %s: %s", query_id, str(e))
+            raise
+
+    def check_anomaly(self, query_id: str, record: Dict, historical_data = None, is_final_record: bool = False) -> Dict:
+        logger.debug("[statistical_detector.py] Starting check_anomaly for query_id: %s", query_id)
+        logger.debug("[statistical_detector.py] Input record: %s", record)
+
+        # Load historical data
+        historical_data = historical_data or self._load_historical_data(query_id)
+        logger.debug("[statistical_detector.py] Loaded historical data count: %d", len(historical_data))
+
+        # Add timestamp to record
+        timestamp = datetime.now().isoformat()
+        logger.debug("[statistical_detector.py] Created timestamp: %s", timestamp)
+
+        # Ensure we're storing the full record structure
+        record_with_meta = {
+            'data': record.get('data', record),
+            'timestamp': record.get('timestamp', timestamp)
+        }
+        logger.debug("[statistical_detector.py] Created record_with_meta: %s", record_with_meta)
+
+        # Add to historical data and save
+        historical_data.append(record_with_meta)
+
+
+        # Extract features
+        features = self._extract_features(record_with_meta)
+        logger.debug("[statistical_detector.py] Extracted features: %s", features)
+
+        if not features:
+            logger.warning("[statistical_detector.py] No features extracted from record")
+            return {
+                "is_anomaly": False,
+                "reason": "No numerical features extracted",
+                "score": 0.0,
+                "features": []
+            }
+
+        # Increment pending updates counter
+        self._increment_pending_updates(query_id)
+
+        if is_final_record:
+            self._save_historical_data(query_id, historical_data)
+
+        # Check if we should retrain (either threshold reached or final record)
+        should_retrain = self._should_retrain(query_id) or is_final_record
+        if should_retrain:
+            logger.debug("[statistical_detector.py] Retraining triggered for %s (threshold: %d, is_final: %s)",
+                         query_id, self.retrain_threshold, is_final_record)
+            try:
+                model_data = self._train_model(query_id, historical_data)
+                self._reset_pending_updates(query_id)
+            except Exception as e:
+                logger.error("[statistical_detector.py] Error retraining model: %s", str(e))
+                # Continue with existing model if retraining fails
+                model_data = self.db_storage.load_model(query_id)
+        else:
+            # Check if the model is cached
+            if query_id in self.model_cache:
+                logger.debug("[statistical_detector.py] Using cached model for %s", query_id)
+                model_data = self.model_cache[query_id]
+            else:
+                # Load existing model
+                model_data = self.db_storage.load_model(query_id)
+                if not model_data:
+                    logger.debug("[statistical_detector.py] No existing model found, training initial model")
+                    try:
+                        self._save_historical_data(query_id, historical_data)
+                        model_data = self._train_model(query_id, historical_data)
+                    except Exception as e:
+                        logger.error("[statistical_detector.py] Error training initial model: %s", str(e))
+                        raise
+
+        try:
+            # Verify feature dimensions match the model
+            expected_features = model_data.get('num_features', 0)
+            if 0 < expected_features != len(features):
+                logger.warning(
+                    "[statistical_detector.py] Feature dimension mismatch. Model expects %d, got %d. Adapting...",
+                    expected_features, len(features))
+
+                # Adapt features to match expected dimensions
+                if len(features) > expected_features:
+                    # Truncate
+                    features = features[:expected_features]
+                    logger.debug("[statistical_detector.py] Truncated features to length %d", expected_features)
+                else:
+                    # Pad with zeros
+                    features = features + [0.0] * (expected_features - len(features))
+                    logger.debug("[statistical_detector.py] Padded features to length %d", expected_features)
+
+            # Scale features
+            features_scaled = model_data['scaler'].transform([features])
+            logger.debug("[statistical_detector.py] Scaled features shape: %s", features_scaled.shape)
+
+            # Get predictions
+            is_anomaly = model_data['model'].predict(features_scaled)[0] == -1
+            anomaly_score = model_data['model'].score_samples(features_scaled)[0]
+
+            result = {
+                "is_anomaly": is_anomaly,
+                "score": float(anomaly_score),
+                "features": features,
+                "model_details": {
+                    "model_type": "isolation_forest",
+                    "features_used": len(features),
+                    "pending_updates": self.pending_updates.get(query_id, 0),
+                    "retrain_threshold": self.retrain_threshold
+                }
+            }
+
+            logger.debug("[statistical_detector.py] Analysis result: %s", result)
+            return result
+
+        except Exception as e:
+            logger.error("[statistical_detector.py] Error during prediction: %s", str(e))
             raise
 
     def _remove_historical_data(self, query_id: str, records_to_remove: List[Dict]):
@@ -188,101 +375,6 @@ class PersistentAnomalyDetector:
                         raise
         except Exception as e:
             logger.error("[statistical_detector.py] Error during finalize_training: %s", str(e))
-            raise
-
-    def check_anomaly(self, query_id: str, record: Dict, is_final_record: bool = False) -> Dict:
-        logger.debug("[statistical_detector.py] Starting check_anomaly for query_id: %s", query_id)
-        logger.debug("[statistical_detector.py] Input record: %s", record)
-
-        # Load historical data
-        historical_data = self._load_historical_data(query_id)
-        logger.debug("[statistical_detector.py] Loaded historical data count: %d", len(historical_data))
-
-        # Add timestamp to record
-        timestamp = datetime.now().isoformat()
-        logger.debug("[statistical_detector.py] Created timestamp: %s", timestamp)
-
-        # Ensure we're storing the full record structure
-        record_with_meta = {
-            'data': record.get('data', record),
-            'timestamp': record.get('timestamp', timestamp)
-        }
-        logger.debug("[statistical_detector.py] Created record_with_meta: %s", record_with_meta)
-
-        # Add to historical data and save
-        historical_data.append(record_with_meta)
-        self._save_historical_data(query_id, historical_data)
-
-        # Extract features
-        features = self._extract_features(record_with_meta)
-        logger.debug("[statistical_detector.py] Extracted features: %s", features)
-
-        if not features:
-            logger.warning("[statistical_detector.py] No features extracted from record")
-            return {
-                "is_anomaly": False,
-                "reason": "No numerical features extracted",
-                "score": 0.0,
-                "features": []
-            }
-
-        # Increment pending updates counter
-        self._increment_pending_updates(query_id)
-
-        # Check if we should retrain (either threshold reached or final record)
-        should_retrain = self._should_retrain(query_id) or is_final_record
-        if should_retrain:
-            logger.debug("[statistical_detector.py] Retraining triggered for %s (threshold: %d, is_final: %s)",
-                         query_id, self.retrain_threshold, is_final_record)
-            try:
-                model_data = self._train_model(query_id, historical_data)
-                self._reset_pending_updates(query_id)
-            except Exception as e:
-                logger.error("[statistical_detector.py] Error retraining model: %s", str(e))
-                # Continue with existing model if retraining fails
-                model_data = self.db_storage.load_model(query_id)
-        else:
-            # Check if the model is cached
-            if query_id in self.model_cache:
-                logger.debug("[statistical_detector.py] Using cached model for %s", query_id)
-                model_data = self.model_cache[query_id]
-            else:
-                # Load existing model
-                model_data = self.db_storage.load_model(query_id)
-                if not model_data:
-                    logger.debug("[statistical_detector.py] No existing model found, training initial model")
-                    try:
-                        model_data = self._train_model(query_id, historical_data)
-                    except Exception as e:
-                        logger.error("[statistical_detector.py] Error training initial model: %s", str(e))
-                        raise
-
-        try:
-            # Scale features
-            features_scaled = model_data['scaler'].transform([features])
-            logger.debug("[statistical_detector.py] Scaled features shape: %s", features_scaled.shape)
-
-            # Get predictions
-            is_anomaly = model_data['model'].predict(features_scaled)[0] == -1
-            anomaly_score = model_data['model'].score_samples(features_scaled)[0]
-
-            result = {
-                "is_anomaly": is_anomaly,
-                "score": float(anomaly_score),
-                "features": features,
-                "model_details": {
-                    "model_type": "isolation_forest",
-                    "features_used": len(features),
-                    "pending_updates": self.pending_updates.get(query_id, 0),
-                    "retrain_threshold": self.retrain_threshold
-                }
-            }
-
-            logger.debug("[statistical_detector.py] Analysis result: %s", result)
-            return result
-
-        except Exception as e:
-            logger.error("[statistical_detector.py] Error during prediction: %s", str(e))
             raise
 
     def _load_historical_data(self, query_id: str) -> List[Dict]:

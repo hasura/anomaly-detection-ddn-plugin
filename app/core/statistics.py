@@ -1,3 +1,4 @@
+import re
 from typing import Dict, List, Any, Union, Tuple
 import numpy as np
 from datetime import datetime
@@ -42,6 +43,46 @@ class DatasetStatistics:
         return avg_length < 50  # Arbitrary threshold for enum-like strings
 
     @staticmethod
+    def _calculate_numeric_stats(values: List[Union[int, float]]) -> Dict:
+        """Calculate basic statistics for numeric values"""
+        if not values:
+            return {
+                "mean": 0,
+                "std": 0,
+                "min": 0,
+                "max": 0,
+                "median": 0,
+                "q1": 0,
+                "q3": 0,
+                "unique_count": 0
+            }
+
+        try:
+            return {
+                "mean": float(np.mean(values)),
+                "std": float(np.std(values)),
+                "min": float(np.min(values)),
+                "max": float(np.max(values)),
+                "median": float(np.median(values)),
+                "q1": float(np.percentile(values, 25)),
+                "q3": float(np.percentile(values, 75)),
+                "unique_count": len(set(values))
+            }
+        except Exception as e:
+            logger.error(f"Error calculating numeric statistics: {str(e)}")
+            return {
+                "error": str(e),
+                "mean": 0,
+                "std": 0,
+                "min": 0,
+                "max": 0,
+                "median": 0,
+                "q1": 0,
+                "q3": 0,
+                "unique_count": 0
+            }
+
+    @staticmethod
     def _analyze_string_field(field_values: List[Any], field_name: str = None) -> Tuple[str, Dict]:
         """Analyze string field statistics"""
         try:
@@ -72,7 +113,7 @@ class DatasetStatistics:
                     numeric_values = [float(val) for val in str_values if val]
                     return "numeric", {
                         "type": "numeric",
-                        "stats": DatasetStatistics._calculate_numeric_stats(numeric_values)
+                        "numeric_stats": DatasetStatistics._calculate_numeric_stats(numeric_values)
                     }
                 except (ValueError, TypeError):
                     pass
@@ -105,6 +146,59 @@ class DatasetStatistics:
             return pd.to_datetime(value)
         except (ValueError, TypeError):
             return None
+
+    @staticmethod
+    def convert_string_array_to_numeric(
+            arr: List[str],
+            allow_scientific: bool = False
+    ) -> Tuple[bool, List[Union[float, str]]]:
+        """
+        Attempts to convert an array of strings to numeric values.
+
+        Args:
+            arr: List of strings to convert
+            allow_scientific: Whether to allow scientific notation (e.g., 1.23e4)
+
+        Returns:
+            Tuple of (success, result)
+            If success is True, result is a list of converted numeric values
+            If success is False, result is the original list
+        """
+        if not arr:
+            return True, []
+
+        # Create a new array for the converted values
+        converted = []
+
+        # Choose the appropriate regex pattern based on whether scientific notation is allowed
+        if allow_scientific:
+            pattern = r'^-?\d+(\.\d+)?([eE][+-]?\d+)?$'
+        else:
+            pattern = r'^-?\d+(\.\d+)?$'
+
+        # Try to convert each string to a Decimal
+        for item in arr:
+            # Skip non-string items or None
+            if item is None or not isinstance(item, str):
+                return False, arr
+
+            # Trim whitespace
+            trimmed = item.strip()
+
+            # Check if it's a valid number format
+            if re.match(pattern, trimmed):
+                try:
+                    # Use Decimal for precise representation
+                    converted.append(float(trimmed))
+                except (ValueError, TypeError):
+                    # If conversion fails, return the original array
+                    return False, arr
+            else:
+                # If any item is not a valid number, return the original array
+                return False, arr
+
+        # If we made it here, all items were successfully converted
+        return True, converted
 
     @staticmethod
     def _is_date_field(values: List[Any]) -> bool:
@@ -167,9 +261,15 @@ class DatasetStatistics:
                 non_null_values = [v for v in values if v is not None]
                 if not non_null_values:
                     continue
+                is_float = False
+                float_array = None
+                if not field in numeric_fields:
+                    is_float, float_array = DatasetStatistics.convert_string_array_to_numeric(non_null_values)
 
                 if field in numeric_fields:
                     stats["fields"][field] = DatasetStatistics._analyze_numeric_field(non_null_values)
+                elif is_float:
+                    stats["fields"][field] = DatasetStatistics._analyze_numeric_field(float_array)
                 elif DatasetStatistics._is_date_field(non_null_values):
                     stats["fields"][field] = DatasetStatistics._analyze_date_field(non_null_values)
                 else:
@@ -218,7 +318,7 @@ class DatasetStatistics:
             values = [float(v) for v in values]  # Ensure all values are float
             return {
                 "type": "numeric",
-                "stats": {
+                "numeric_stats": {
                     "mean": float(np.mean(values)),
                     "std": float(np.std(values)),
                     "min": float(np.min(values)),
@@ -267,7 +367,7 @@ class DatasetStatistics:
                     "max_date": max(valid_dates).isoformat(),
                     "unique_dates": len(set(valid_dates))
                 },
-                "numeric_stats": DatasetStatistics._analyze_numeric_field(timestamps),
+                "numeric_stats": DatasetStatistics._analyze_numeric_field(timestamps)['numeric_stats'],
                 "components": {
                     "years": DatasetStatistics._analyze_numeric_field(years),
                     "months": {

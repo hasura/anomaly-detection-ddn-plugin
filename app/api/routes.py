@@ -1,11 +1,13 @@
 import datetime
 import hashlib
+import os
+import re
 from flask import request, jsonify
 from app.api.validators import require_headers, validate_request
 import logging
 
 from app.core.storage import AnomalyStorage
-from app.core.db_storage import DatabaseStorage, QueryPattern
+from app.core.db_storage import DatabaseStorage
 
 logger = logging.getLogger(__name__)
 
@@ -15,6 +17,28 @@ def generate_query_hash(query: str) -> str:
     return hashlib.md5(query.encode('utf-8')).hexdigest()
 
 
+def should_exclude_dataset(dataset_key: str, exclusion_patterns: list) -> bool:
+    """
+    Check if dataset should be excluded based on regex patterns
+
+    Args:
+        dataset_key: The dataset key to check
+        exclusion_patterns: List of compiled regex patterns
+
+    Returns:
+        bool: True if dataset should be excluded, False otherwise
+    """
+    if not exclusion_patterns:
+        return False
+
+    for pattern in exclusion_patterns:
+        if pattern.search(dataset_key):
+            logger.info(f"Excluding dataset {dataset_key} based on pattern {pattern.pattern}")
+            return True
+
+    return False
+
+
 def create_routes(app, anomaly_service):
     """Create API routes"""
 
@@ -22,12 +46,26 @@ def create_routes(app, anomaly_service):
     file_storage = AnomalyStorage(app.config['STORAGE_PATH'])
     db_storage = DatabaseStorage(app.config['DATABASE_URL'],app.config['DB_CONNECT_ARGS'])
 
+    # Get and compile exclusion patterns from environment variable
+    excluded_datasets_env = os.environ.get('EXCLUDED_DATASETS', '')
+    excluded_patterns = []
+
+    if excluded_datasets_env:
+        patterns = [p.strip() for p in excluded_datasets_env.split(',') if p.strip()]
+        for pattern in patterns:
+            try:
+                excluded_patterns.append(re.compile(pattern))
+                logger.info(f"Added dataset exclusion pattern: {pattern}")
+            except re.error as e:
+                logger.error(f"Invalid regex pattern '{pattern}': {str(e)}")
+
     @app.route('/health', methods=['GET'])
     def health_check():
         """Health check endpoint"""
         return jsonify({
             "status": "healthy",
-            "timestamp": datetime.datetime.now().isoformat()
+            "timestamp": datetime.datetime.now().isoformat(),
+            "excluded_patterns": [p.pattern for p in excluded_patterns] if excluded_patterns else []
         })
 
     @app.route('/anomalies', methods=['POST'])
@@ -57,11 +95,18 @@ def create_routes(app, anomaly_service):
             }
 
             results = {}
+            skipped_datasets = []
             total_records = 0
             total_anomalies = 0
 
             for dataset_key, records in datasets.items():
                 if not records:  # Skip empty datasets
+                    continue
+
+                # Check if dataset should be excluded
+                if should_exclude_dataset(dataset_key, excluded_patterns):
+                    skipped_datasets.append(dataset_key)
+                    logger.info(f"Skipping excluded dataset: {dataset_key}")
                     continue
 
                 total_records += len(records)
@@ -115,12 +160,14 @@ def create_routes(app, anomaly_service):
                         "dataset": dataset_key
                     }
 
-            db_storage.save_query_pattern(
-                query_text=context.get('query'),
-                variables_json=context.get('variables'),
-                user_role=context.get('role'),
-                is_anomalous=total_anomalies > 0,
-            )
+            # Only save query pattern if any datasets were analyzed
+            if results:
+                db_storage.save_query_pattern(
+                    query_text=context.get('query'),
+                    variables_json=context.get('variables'),
+                    user_role=context.get('role'),
+                    is_anomalous=total_anomalies > 0,
+                )
 
             response = {
                 "results": results,
@@ -131,6 +178,7 @@ def create_routes(app, anomaly_service):
                     "total_records": total_records,
                     "total_anomalies": total_anomalies,
                     "datasets_processed": len(results),
+                    "datasets_skipped": skipped_datasets,
                     "status": "completed"
                 }
             }

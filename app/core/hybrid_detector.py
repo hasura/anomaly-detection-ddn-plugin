@@ -61,7 +61,8 @@ class EfficientHybridDetector:
                                  idx, type(data_record))
                     continue
 
-                result = self.statistical_detector.check_anomaly(query_id, record, is_final_record=is_final)
+
+                result = self.statistical_detector.check_anomaly(query_id, record, historical_data, is_final_record=is_final)
                 logger.debug("[hybrid_detector.py] Statistical analysis result for record %d: %s",
                              idx, result)
 
@@ -164,7 +165,7 @@ class EfficientHybridDetector:
     def get_model_info(self, query_id: str) -> Dict:
         """Get information about the statistical model for a query hash"""
         try:
-            model_data = self.statistical_detector._load_model(query_id)
+            model_data = self.statistical_detector.db_storage.load_model(query_id)
             if not model_data:
                 return {"status": "no_model"}
 
