@@ -1,16 +1,18 @@
+import enum
 import hashlib
 import json
-from typing import Dict, List, Optional, Type
+import logging
+import pickle
 from datetime import datetime, timedelta
+from typing import Dict, List, Optional, Type
+
 from graphql import parse, visit, Visitor, GraphQLError
+from sqlalchemy import LargeBinary
 from sqlalchemy import create_engine, Column, String, DateTime, Integer, Float, ForeignKey, Boolean, Text, Enum, Index
+from sqlalchemy import text, inspect
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import relationship, sessionmaker
 from sqlalchemy.sql import func
-import enum
-import logging
-import pickle
-from sqlalchemy import LargeBinary
 
 Base = declarative_base()
 
@@ -346,9 +348,87 @@ class StatisticalFlag(Base):
     analysis = relationship("AnomalyAnalysis", back_populates="statistical_flags")
 
 
+from sqlalchemy import text
+
+
+def ensure_schema_exists(engine, connect_args):
+    """
+    Ensures schema exists based on connect_args for the specific database dialect.
+
+    Args:
+        engine: SQLAlchemy engine
+        connect_args: The connect_args dictionary passed to create_engine
+    """
+    dialect_name = engine.dialect.name
+    schema_name = None
+
+    # Extract schema based on dialect and connect_args
+    if dialect_name == 'postgresql':
+        options = connect_args.get('options', '')
+        if options and 'search_path=' in options:
+            # Extract first schema from search_path
+            if '-c search_path=' in options:
+                search_path = options.split('-c search_path=')[1].split()[0]
+            else:
+                search_path = options.split('search_path=')[1].split()[0]
+
+            # Get first schema in the path
+            schema_name = search_path.split(',')[0].strip()
+
+            # Don't create 'public' schema as it exists by default
+            if schema_name == 'public':
+                return
+
+    elif dialect_name in ('mysql', 'mariadb'):
+        init_command = connect_args.get('init_command', '')
+        if init_command and 'default_schema=' in init_command:
+            schema_name = init_command.split('default_schema=')[1].split(';')[0].strip()
+
+    elif dialect_name == 'oracle':
+        # For Oracle, schema creation usually requires separate admin privileges
+        # Just log that we don't handle this automatically
+        print("Note: Oracle schemas typically need to be created by a DBA")
+        return
+
+    elif dialect_name == 'mssql':
+        # For SQL Server, schema might be in the connect_args
+        schema_name = connect_args.get('schema', None)
+
+    # Skip if no schema name found or it's a default schema
+    if not schema_name or schema_name.lower() in ('public', 'dbo', 'default'):
+        return
+
+    # Create schema based on dialect
+    with engine.connect() as conn:
+        try:
+            if dialect_name == 'postgresql':
+                conn.execute(text(f"CREATE SCHEMA IF NOT EXISTS {schema_name}"))
+                conn.commit()
+                print(f"Created schema '{schema_name}' in PostgreSQL database")
+
+            elif dialect_name in ('mysql', 'mariadb'):
+                conn.execute(text(f"CREATE DATABASE IF NOT EXISTS {schema_name}"))
+                conn.commit()
+                print(f"Created database '{schema_name}' in MySQL/MariaDB")
+
+            elif dialect_name == 'mssql':
+                conn.execute(text(
+                    f"IF NOT EXISTS (SELECT * FROM sys.schemas WHERE name = '{schema_name}') "
+                    f"EXEC('CREATE SCHEMA [{schema_name}]')"))
+                conn.commit()
+                print(f"Created schema '{schema_name}' in SQL Server database")
+
+            # SQLite doesn't support schemas in the same way
+
+        except Exception as e:
+            print(f"Error creating schema: {e}")
+            # Log error but don't raise to prevent application startup failure
+
+
 class DatabaseStorage:
     def __init__(self,
                  connection_url: str,
+                 connect_args: Optional[Dict] = None,
                  historical_retention_days: int = 14,
                  anomaly_retention_days: int = 30,
                  model_retention_days: int = 7,
@@ -362,7 +442,11 @@ class DatabaseStorage:
             model_retention_days: Days to retain trained models
             retrain_threshold: Number of records before model retraining
         """
-        self.engine = create_engine(connection_url, pool_size=20, max_overflow=0)
+        if connect_args:
+            self.engine = create_engine(connection_url, pool_size=20, max_overflow=0, connect_args=connect_args)
+            ensure_schema_exists(self.engine, connect_args)
+        else:
+            self.engine = create_engine(connection_url, pool_size=20, max_overflow=0)
         self.Session = sessionmaker(bind=self.engine)
         self.logger = logging.getLogger(__name__)
         self.historical_retention_days = historical_retention_days

@@ -77,7 +77,7 @@ pip install pyodbc
 
 5. Set up environment variables:
 ```bash
-cp .env.example .env
+cp .env.sample .env
 ```
 
 ## Environment Variables

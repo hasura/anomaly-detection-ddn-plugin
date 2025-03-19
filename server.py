@@ -1,3 +1,4 @@
+import sys
 from datetime import datetime
 
 from flask import Flask
@@ -22,37 +23,55 @@ class ServerManager:
         self.server = None
         self._setup_signal_handlers()
         self._shutdown_event = threading.Event()
+        self._shutdown_timeout = 10  # seconds
 
     def _setup_signal_handlers(self):
+        # Use just one approach for handling signals
         for sig in [signal.SIGINT, signal.SIGTERM]:
             signal.signal(sig, self._signal_handler)
 
     def _signal_handler(self, signum, frame):
         logger.info(f"Received signal {signum}")
-        self._shutdown_event.set()
-        self.cleanup()
+        # Just set the event and call cleanup once
+        if not self._shutdown_event.is_set():
+            self._shutdown_event.set()
+            # Use threading to avoid hanging in signal handler
+            threading.Thread(target=self.cleanup).start()
 
     def cleanup(self, *args):
         if self.server:
             logger.info("Shutting down server...")
             try:
-                # Close all active connections
-                if hasattr(self.server, 'socket'):
-                    self.server.socket.close()
-                self.server.shutdown()
+                # Set a timeout for the shutdown process
+                shutdown_thread = threading.Thread(target=self._shutdown_server)
+                shutdown_thread.daemon = True
+                shutdown_thread.start()
+
+                # Wait with timeout
+                shutdown_thread.join(timeout=self._shutdown_timeout)
+
+                if shutdown_thread.is_alive():
+                    logger.warning(f"Server shutdown took longer than {self._shutdown_timeout}s. Forcing exit.")
+                    # Force cleanup if still running after timeout
+                    sys.exit(1)
+
+                logger.info("Server shutdown complete")
             except Exception as e:
                 logger.error(f"Error during server shutdown: {e}")
+                sys.exit(1)
 
-            try:
-                # Force socket cleanup
-                for sock in socket.socket._defaultsock:
-                    try:
-                        sock.close()
-                    except:
-                        pass
-            except:
-                pass
-            logger.info("Server shutdown complete")
+    def _shutdown_server(self):
+        """Actual server shutdown logic, run in a separate thread"""
+        try:
+            if hasattr(self.server, 'shutdown'):
+                # First stop accepting new requests
+                self.server.shutdown()
+
+            # Then properly close the server
+            if hasattr(self.server, 'server_close'):
+                self.server.server_close()
+        except Exception as e:
+            logger.error(f"Error during server shutdown sequence: {e}")
 
     def run_server(self, app, host, port, debug):
         try:
@@ -61,9 +80,10 @@ class ServerManager:
                 atexit.register(self.cleanup)
                 # Use werkzeug's debug server
                 self.server = make_server(host, port, app, threaded=True)
-                self.server._BaseServer__is_shut_down = threading.Event()  # Reset shutdown event
                 logger.info(f"Starting debug server on {host}:{port}")
-                self.server.serve_forever()
+                # Add check for shutdown event
+                while not self._shutdown_event.is_set():
+                    self.server.handle_request()
             else:
                 # In production, use regular werkzeug server
                 self.server = make_server(host, port, app)
@@ -71,19 +91,12 @@ class ServerManager:
                 self.server.serve_forever()
         except socket.error as e:
             logger.error(f"Socket error: {e}")
-            # Try to force-close the port
-            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            try:
-                sock.bind((host, port))
-            except:
-                pass
-            finally:
-                sock.close()
             raise
         except Exception as e:
             logger.error(f"Server error: {e}")
             raise
         finally:
+            # Ensure cleanup is called
             self.cleanup()
 
 def create_app(config):
@@ -93,6 +106,7 @@ def create_app(config):
     # Initialize database storage with configured retention periods
     db_storage = DatabaseStorage(
         connection_url=app.config['DATABASE_URL'],
+        connect_args=app.config['DB_CONNECT_ARGS'],
         historical_retention_days=app.config.get('HISTORICAL_RETENTION_DAYS', 14),
         anomaly_retention_days=app.config.get('ANOMALY_RETENTION_DAYS', 30)
     )

@@ -1,3 +1,4 @@
+import json
 import os
 from pathlib import Path
 import dotenv
@@ -6,6 +7,9 @@ dotenv.load_dotenv()
 
 # Database configuration
 DB_HOST = os.getenv('DB_HOST', 'localhost')
+DB_CONNECT_ARGS = os.getenv('DB_CONNECT_ARGS', None)
+if DB_CONNECT_ARGS:
+    DB_CONNECT_ARGS=json.loads(DB_CONNECT_ARGS)
 DB_PORT = int(os.getenv('DB_PORT', '5432'))
 DB_NAME = os.getenv('DB_NAME', 'anomalies')
 DB_USER = os.getenv('DB_USER', 'postgres')

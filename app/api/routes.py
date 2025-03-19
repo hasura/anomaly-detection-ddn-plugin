@@ -20,7 +20,7 @@ def create_routes(app, anomaly_service):
 
     # Initialize storage handlers
     file_storage = AnomalyStorage(app.config['STORAGE_PATH'])
-    db_storage = DatabaseStorage(app.config['DATABASE_URL'])
+    db_storage = DatabaseStorage(app.config['DATABASE_URL'],app.config['DB_CONNECT_ARGS'])
 
     @app.route('/health', methods=['GET'])
     def health_check():
