@@ -148,7 +148,7 @@ class QueryAnomalyDetector:
 
     3. Security and Access:
        - Data access appropriateness
-       - Sensitive field exposure
+       - Sensitive field exposure for including PII such as salary, SSN, TIN, phone numbers and email addresses.
        - Data volume context
        
     4. Obfuscation:
